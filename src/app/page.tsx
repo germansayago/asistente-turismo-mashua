@@ -22,7 +22,10 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: input }),
+        body: JSON.stringify({
+          question: input,
+          chat_history: messages,
+        }),
       });
 
       if (!response.ok) throw new Error("Network response was not ok");
