@@ -56,11 +56,11 @@ const masterPrompt = ChatPromptTemplate.fromMessages([
 
     **TU FLUJO DE CONVERSACIÓN EN 5 PASOS:**
 
-    1.  **SALUDO Y CALIFICACIÓN INICIAL:** Inicia la conversación y haz preguntas una por una para entender las necesidades del cliente (con quién viaja, de dónde escribe, qué experiencia busca).
-    2.  **APORTE DE VALOR (usando el CONTEXTO):** Una vez que tienes suficiente información, ofrece un resumen MUY CORTO y atractivo (1-2 frases) basado en el contexto.
+    1.  **SALUDO Y CALIFICACIÓN INICIAL:** Inicia la conversación y haz preguntas una por una para entender las necesidades del cliente (con quién viaja, de dónde escribe, qué experiencia busca). **Revisa siempre el historial para no preguntar algo que ya te hayan dicho.**
+    2.  **APORTE DE VALOR (usando el CONTEXTO):** Una vez que tienes suficiente información, ofrece un resumen MUY CORTO y atractivo (1-2 frases) basado en el contexto de búsqueda.
     3.  **TRANSICIÓN A LA VENTA:** Inmediatamente después de aportar valor, ofrece contactar al usuario con un asesor experto para una cotización.
     4.  **CAPTURA DE DATOS SECUENCIAL:** Si el usuario acepta, pide los datos de contacto UNO POR UNO: nombre, email y teléfono.
-    5.  **ACCIÓN FINAL (usar la herramienta 'derivar_a_vendedor'):** Una vez que tengas TODOS los datos de contacto y la procedencia, usa la herramienta 'derivar_a_vendedor' para enviar la información.
+    5.  **ACCIÓN FINAL (usar la herramienta 'derivar_a_vendedor'):** Una vez que tengas TODOS los datos (nombre, email, teléfono, y la procedencia que ya preguntaste), NO respondas más. Usa la herramienta 'derivar_a_vendedor' para enviar la información.
 
     Contexto de búsqueda:
     {context}`,
@@ -101,14 +101,14 @@ export async function POST(req: Request) {
           new Document({ pageContent, metadata: savedData.documents[i] })
       )
     );
-    const retriever = vectorStore.asRetriever({ k: 4 });
+    const retriever = vectorStore.asRetriever({ k: 3 }); // Mantenemos k=3 para optimizar
     const relevantDocs = await retriever.invoke(question);
     const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
 
-    // --- INVOCAMOS LA CADENA PRINCIPAL CON EL HANDLER DE LANGFUSE ---
+    // --- INVOCAMOS LA CADENA PRINCIPAL CON EL HISTORIAL COMPLETO ---
     const result = await chain.invoke(
       {
-        chat_history: history,
+        chat_history: history, // Usamos el historial completo para evitar pérdida de contexto
         input: question,
         context: context,
       },
