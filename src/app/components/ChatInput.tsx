@@ -1,8 +1,11 @@
+import { RefObject } from "react";
+
 interface ChatInputProps {
   input: string;
   setInput: (value: string) => void;
   handleSend: () => void;
   isLoading: boolean;
+  inputRef: RefObject<HTMLInputElement | null>;
 }
 
 export const ChatInput = ({
@@ -10,15 +13,17 @@ export const ChatInput = ({
   setInput,
   handleSend,
   isLoading,
+  inputRef,
 }: ChatInputProps) => {
   return (
     <div className="p-4 border-t border-gray-200 bg-white">
       <div className="flex items-center space-x-2">
         <input
+          ref={inputRef}
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyUp={(e) => e.key === "Enter" && !isLoading && handleSend()}
+          onKeyPress={(e) => e.key === "Enter" && !isLoading && handleSend()}
           placeholder="Escribe tu mensaje..."
           disabled={isLoading}
           className="flex-grow p-2 px-4 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"

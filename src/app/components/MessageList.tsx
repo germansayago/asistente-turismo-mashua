@@ -1,11 +1,11 @@
-import { LegacyRef } from "react";
+import { RefObject } from "react";
 
 type Message = { text: string; sender: "user" | "bot" };
 
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
-  chatContainerRef: LegacyRef<HTMLDivElement> | undefined;
+  chatContainerRef: RefObject<HTMLDivElement | null>;
 }
 
 export const MessageList = ({

@@ -1,18 +1,23 @@
 "use client";
-
 import { useState, useEffect, useRef } from "react";
-import { ChatWindow } from "./components/ChatWindow";
 import { ChatBubble } from "./components/ChatBubble";
+import { ChatWindow } from "./components/ChatWindow";
 
 export default function Home() {
   type Message = { text: string; sender: "user" | "bot" };
 
-  // --- El estado y la lógica principal viven aquí ---
-  const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      sender: "bot",
+      text: "¡Hola! Soy tu asistente de viajes. ¿En qué puedo ayudarte hoy?",
+    },
+  ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (chatContainerRef.current) {
@@ -20,6 +25,14 @@ export default function Home() {
         chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    // Enfoca el input cuando se abre la ventana o cuando termina de cargar una respuesta
+    if (isOpen && !isLoading && inputRef.current) {
+      // Usamos un pequeño timeout para asegurar que el input sea visible antes de enfocar
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [isOpen, isLoading, messages]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -50,11 +63,10 @@ export default function Home() {
     }
   };
 
-  // --- La renderización es mucho más simple ---
   return (
-    <main className="h-[100vh] bg-gray-100 p-5">
-      <h1 className="text-3xl font-bold">Página de Contenido Principal</h1>
-      <p>Aquí iría el contenido de tu web. El chat flotará sobre esto.</p>
+    <main className="h-[200vh] bg-gray-100 p-5">
+      <h1 className="text-3xl font-bold">Página de Contenido</h1>
+      <p>Aquí iría el contenido de tu web.</p>
 
       <ChatBubble onClick={() => setIsOpen(!isOpen)} />
 
@@ -67,6 +79,7 @@ export default function Home() {
         handleSend={handleSend}
         isLoading={isLoading}
         chatContainerRef={chatContainerRef}
+        inputRef={inputRef}
       />
     </main>
   );
