@@ -48,25 +48,29 @@ const llmWithTools = llm.bindTools([
   },
 ]);
 
-// --- "Cerebro" del Asistente (Prompt Principal) ---
+// --- PROMPT UNIFICADO Y ROBUSTO ---
 const masterPrompt = ChatPromptTemplate.fromMessages([
   [
     "system",
-    `Eres un asistente de viajes experto, amigable y proactivo para la agencia "Mashua". Tu único objetivo es calificar a los clientes potenciales a través de una conversación natural y guiada, y usar la herramienta 'derivar_a_vendedor' cuando tengas toda la información.
+    `Eres un asistente de viajes experto, amigable y proactivo para la agencia "Mashua". Tu único y estricto objetivo es calificar a los clientes potenciales a través de una conversación natural y guiada, y usar la herramienta 'derivar_a_vendedor' cuando tengas toda la información.
 
-    **TU FLUJO DE CONVERSACIÓN EN 5 PASOS:**
+    **TU FLUJO DE CONVERSACIÓN SE BASA EN ESTAS REGLAS:**
 
-    1.  **SALUDO Y CALIFICACIÓN INICIAL:** Inicia la conversación y haz preguntas una por una para entender las necesidades del cliente (con quién viaja, de dónde escribe, qué experiencia busca). **Revisa siempre el historial para no preguntar algo que ya te hayan dicho.**
-    2.  **APORTE DE VALOR (usando el CONTEXTO):** Una vez que tienes suficiente información, ofrece un resumen MUY CORTO y atractivo (1-2 frases) basado en el contexto de búsqueda.
-    3.  **TRANSICIÓN A LA VENTA:** Inmediatamente después de aportar valor, ofrece contactar al usuario con un asesor experto para una cotización.
-    4.  **CAPTURA DE DATOS SECUENCIAL:** Si el usuario acepta, pide los datos de contacto UNO POR UNO: nombre, email y teléfono.
-    5.  **ACCIÓN FINAL (usar la herramienta 'derivar_a_vendedor'):** Una vez que tengas TODOS los datos (nombre, email, teléfono, y la procedencia que ya preguntaste), NO respondas más. Usa la herramienta 'derivar_a_vendedor' para enviar la información.
+    1.  **MANTÉN EL FOCO:** Si el usuario pregunta sobre cualquier tema que no esté relacionado con viajes o la agencia "Mashua", debes responder de manera educada que tu especialidad es el turismo y que no puedes ayudar con esa consulta. **Bajo ninguna circunstancia, respondas a preguntas irrelevantes.**
 
-    **REGLAS CRÍTICAS (IMPRESCINDIBLES):**
+    2.  **FLUJO DE CALIFICACIÓN:**
+        a. Inicia la conversación de forma amigable y pregunta por las necesidades del cliente (con quién viaja, de dónde escribe, qué experiencia busca).
+        b. Una vez que tengas suficiente información para ofrecer valor (usando el Contexto), hazlo con 1-2 frases cortas y atractivas.
+        c. Inmediatamente después, ofrece conectar al cliente con un asesor experto para una cotización.
+        d. Si el cliente acepta, **DEBES iniciar el proceso de recolección de datos.** La primera cosa que debes hacer es pedir amablemente el nombre del cliente. Luego, pide un dato a la vez:
+           - Nombre
+           - Email
+           - Teléfono
+        e. Cuando tengas todos los datos (nombre, email, teléfono, procedencia), **NO GENERES MÁS TEXTO. Únicamente usa la herramienta 'derivar_a_vendedor'**.
 
-    - **MANTÉN EL ENFOQUE:** Si el usuario pregunta sobre cualquier tema que no esté relacionado con viajes o con la agencia "Mashua", debes responder de manera educada que tu especialidad es el turismo y que no puedes ayudar con esa consulta. **Bajo ninguna circunstancia, respondas a preguntas irrelevantes como recetas, noticias, chistes o cualquier otra cosa fuera de tu dominio.**
-    - **NO INVENTES:** Si no tienes información relevante en el 'Contexto de búsqueda' sobre un lugar o experiencia, no inventes una respuesta. Responde que no tienes esa información y que un asesor experto podrá ayudarle.
-    - **SÉ CONCISO:** Mantén tus respuestas breves y directas al punto de calificar al lead.
+    3. **REGLAS DE SEGURIDAD:**
+        - **NUNCA RESPONDAS CON UN MENSAJE VACÍO.** Si no sabes qué decir o si el flujo se interrumpe, genera una respuesta que pida de nuevo el dato que te falta (por ejemplo: "¿Cuál es tu email, por favor?").
+        - **NO INVENTES:** Si la información no está en el 'Contexto de búsqueda', no la generes.
 
     Contexto de búsqueda:
     {context}`,
@@ -78,15 +82,21 @@ const masterPrompt = ChatPromptTemplate.fromMessages([
 const chain = masterPrompt.pipe(llmWithTools);
 
 export async function POST(req: Request) {
-  const trace = langfuse.trace({
-    name: "user-chat-request",
-    userId: "anonymous-user",
-  });
-
-  const langfuseHandler = new CallbackHandler({ root: trace });
+  let trace = null;
 
   try {
-    const { question, chat_history } = await req.json();
+    const { question, chat_history, userId } = await req.json();
+
+    const validatedUserId =
+      userId && typeof userId === "string" ? userId : "anonymous-user";
+
+    trace = langfuse.trace({
+      name: "user-chat-request",
+      userId: validatedUserId,
+    });
+
+    const langfuseHandler = new CallbackHandler({ root: trace });
+
     const history = (chat_history || []).map(
       (msg: { sender: string; text: string }) =>
         msg.sender === "user"
@@ -107,14 +117,14 @@ export async function POST(req: Request) {
           new Document({ pageContent, metadata: savedData.documents[i] })
       )
     );
-    const retriever = vectorStore.asRetriever({ k: 3 }); // Mantenemos k=3 para optimizar
+    const retriever = vectorStore.asRetriever({ k: 3 });
     const relevantDocs = await retriever.invoke(question);
     const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
 
-    // --- INVOCAMOS LA CADENA PRINCIPAL CON EL HISTORIAL COMPLETO ---
+    // --- INVOCAMOS LA CADENA PRINCIPAL ---
     const result = await chain.invoke(
       {
-        chat_history: history, // Usamos el historial completo para evitar pérdida de contexto
+        chat_history: history,
         input: question,
         context: context,
       },
@@ -127,7 +137,6 @@ export async function POST(req: Request) {
     if (result.tool_calls && result.tool_calls.length > 0) {
       const toolCall = result.tool_calls[0];
       const contactInfo = toolCall.args;
-
       trace.span({ name: "handoff-to-sales", input: contactInfo });
 
       const fullHistoryText = [...history, new HumanMessage(question)]
@@ -154,17 +163,25 @@ export async function POST(req: Request) {
       answer = `¡Muchas gracias, ${contactInfo.nombre}! He enviado tu consulta a nuestro equipo. Te contactarán a tu email (${contactInfo.email}) o por WhatsApp en breve.`;
     } else {
       answer = result.content as string;
+      if (!answer || answer.trim() === "") {
+        console.warn("Respuesta nula o vacía del LLM. Usando fallback.");
+        answer =
+          "¿Cuál es tu nombre? Con eso, podemos empezar a planificar tu viaje.";
+      }
     }
 
     return NextResponse.json({ answer });
   } catch (error) {
     console.error("Error en el asistente:", error);
-    trace.update({ metadata: { error: (error as Error).toString() } });
+    if (trace) {
+      trace.update({ metadata: { error: (error as Error).toString() } });
+    }
     return NextResponse.json(
       { message: "Error en el asistente" },
       { status: 500 }
     );
   } finally {
+    // Patrón robusto para serverless: Flushear todos los eventos pendientes.
     await langfuse.shutdownAsync();
   }
 }
