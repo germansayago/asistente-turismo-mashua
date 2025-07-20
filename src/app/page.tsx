@@ -1,18 +1,28 @@
-// /app/page.tsx
-"use client"; // Directiva para componentes de cliente en App Router
+"use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { ChatWindow } from "./components/ChatWindow";
+import { ChatBubble } from "./components/ChatBubble";
 
 export default function Home() {
-  const [messages, setMessages] = useState<
-    { text: string; sender: "user" | "bot" }[]
-  >([]);
+  type Message = { text: string; sender: "user" | "bot" };
+
+  // --- El estado y la lógica principal viven aquí ---
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop =
+        chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim()) return;
-
+    if (!input.trim() || isLoading) return;
     const userMessage = { text: input, sender: "user" as const };
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
@@ -22,14 +32,9 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: input,
-          chat_history: messages,
-        }),
+        body: JSON.stringify({ question: input, chat_history: messages }),
       });
-
       if (!response.ok) throw new Error("Network response was not ok");
-
       const data = await response.json();
       const botMessage = { text: data.answer, sender: "bot" as const };
       setMessages((prev) => [...prev, botMessage]);
@@ -45,60 +50,24 @@ export default function Home() {
     }
   };
 
+  // --- La renderización es mucho más simple ---
   return (
-    <div
-      style={{
-        fontFamily: "sans-serif",
-        maxWidth: "600px",
-        margin: "auto",
-        padding: "20px",
-      }}
-    >
-      <div
-        style={{
-          height: "70vh",
-          border: "1px solid #ccc",
-          overflowY: "auto",
-          padding: "20px",
-        }}
-      >
-        {messages.map((msg, index) => (
-          <div
-            key={index}
-            style={{
-              textAlign: msg.sender === "user" ? "right" : "left",
-              margin: "20px 0",
-            }}
-          >
-            <span
-              style={{
-                background: msg.sender === "user" ? "#007bff" : "#e9e9eb",
-                color: msg.sender === "user" ? "white" : "black",
-                padding: "4px",
-                borderRadius: "10px",
-              }}
-            >
-              {msg.text}
-            </span>
-          </div>
-        ))}
-        {isLoading && (
-          <div style={{ textAlign: "left", margin: "10px 0" }}>...</div>
-        )}
-      </div>
-      <div style={{ display: "flex", marginTop: "10px" }}>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyUp={(e) => e.key === "Enter" && handleSend()}
-          style={{ flexGrow: 1, padding: "10px" }}
-          placeholder="Pregunta por nuestros paquetes..."
-        />
-        <button onClick={handleSend} style={{ padding: "10px 20px" }}>
-          Enviar
-        </button>
-      </div>
-    </div>
+    <main className="h-[100vh] bg-gray-100 p-5">
+      <h1 className="text-3xl font-bold">Página de Contenido Principal</h1>
+      <p>Aquí iría el contenido de tu web. El chat flotará sobre esto.</p>
+
+      <ChatBubble onClick={() => setIsOpen(!isOpen)} />
+
+      <ChatWindow
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        messages={messages}
+        input={input}
+        setInput={setInput}
+        handleSend={handleSend}
+        isLoading={isLoading}
+        chatContainerRef={chatContainerRef}
+      />
+    </main>
   );
 }
