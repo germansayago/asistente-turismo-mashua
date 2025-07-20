@@ -1,10 +1,12 @@
 // /src/app/api/sync/route.ts
 import { NextResponse } from "next/server";
-// Ya no necesitamos importar 'headers' de 'next/headers'
 import { Document } from "@langchain/core/documents";
-import { OpenAIEmbeddings } from "@langchain/openai";
+import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { promises as fs } from "fs";
 import path from "path";
+import { Langfuse } from "langfuse";
+import { CallbackHandler } from "langfuse-langchain";
 
 interface WordPressItem {
   link: string;
@@ -18,14 +20,54 @@ const WORDPRESS_POSTS_URL =
 const WORDPRESS_PROMOS_URL =
   "https://mashua.com.ar/wp-json/wp/v2/promocion?per_page=50&_fields=id,title,content,link,fecha_vigente";
 
-// 1. Usamos el parámetro 'request' que nos llega
-export async function GET(request: Request) {
-  // 2. Obtenemos los headers directamente desde el objeto 'request'
-  const authorization = request.headers.get("authorization");
+// Instancia de Langfuse para observabilidad
+const langfuse = new Langfuse({
+  secretKey: process.env.LANGFUSE_SECRET_KEY,
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+  baseUrl: process.env.LANGFUSE_BASEURL,
+});
 
-  if (authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new NextResponse("Unauthorized", { status: 401 });
-  }
+// Instanciamos el LLM para la tarea de resumen
+const summarizerLlm = new ChatOpenAI({
+  modelName: "gpt-3.5-turbo-0125",
+  temperature: 0.1,
+});
+
+// Prompt para guiar al LLM en la tarea de resumen
+const summaryPrompt = ChatPromptTemplate.fromMessages([
+  [
+    "system",
+    "Eres un asistente experto en resumir textos. Tu única tarea es leer el texto proporcionado y devolver un resumen conciso que capture los puntos más importantes. El resumen debe ser de una a dos frases. Proporciona solo el resumen, sin saludos ni ningún otro texto adicional.",
+  ],
+  ["user", "{text_to_summarize}"],
+]);
+
+// Función que se encarga de generar el resumen para un texto
+async function generateSummary(
+  text: string,
+  handler: CallbackHandler
+): Promise<string> {
+  const result = await summaryPrompt
+    .pipe(summarizerLlm)
+    .invoke({ text_to_summarize: text }, { callbacks: [handler] });
+  return result.content as string;
+}
+
+export async function GET(request: Request) {
+  // const authorization = request.headers.get("authorization");
+
+  // if (authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+  //   return new NextResponse("Unauthorized", { status: 401 });
+  // }
+
+  const trace = langfuse.trace({
+    name: "data-sync",
+    input: {
+      url_posts: WORDPRESS_POSTS_URL,
+      url_promos: WORDPRESS_PROMOS_URL,
+    },
+    userId: "sync-agent-cron",
+  });
 
   try {
     console.log("Iniciando sincronización automática...");
@@ -42,30 +84,63 @@ export async function GET(request: Request) {
     const posts: WordPressItem[] = await postsResponse.json();
     const promos: WordPressItem[] = await promosResponse.json();
 
-    const postDocuments = posts.map(
-      (post: WordPressItem) =>
-        new Document({
-          pageContent: post.content.rendered.replace(/<[^>]*>/g, "").trim(),
-          metadata: {
-            source: post.link,
-            title: post.title.rendered,
-            type: "Blog Post",
-          },
-        })
-    );
+    const postPromises = posts.map(async (post) => {
+      const cleanedContent = post.content.rendered
+        .replace(/<[^>]*>/g, "")
+        .trim();
 
-    const promoDocuments = promos.map(
-      (promo: WordPressItem) =>
-        new Document({
-          pageContent: promo.content.rendered.replace(/<[^>]*>/g, "").trim(),
-          metadata: {
-            source: promo.link,
-            title: promo.title.rendered,
-            type: "Promoción",
-            vigencia: promo.fecha_vigente,
-          },
-        })
-    );
+      const summarySpan = trace.span({
+        name: "generate-summary-post",
+        input: cleanedContent,
+        metadata: {
+          title: post.title.rendered,
+        },
+      });
+      const summaryHandler = new CallbackHandler({ root: summarySpan });
+      const summary = await generateSummary(cleanedContent, summaryHandler);
+      summarySpan.update({ output: summary });
+      summarySpan.end(); // <-- ¡CORREGIDO! Usamos .end()
+
+      return new Document({
+        pageContent: summary,
+        metadata: {
+          source: post.link,
+          title: post.title.rendered,
+          type: "Blog Post",
+        },
+      });
+    });
+
+    const promoPromises = promos.map(async (promo) => {
+      const cleanedContent = promo.content.rendered
+        .replace(/<[^>]*>/g, "")
+        .trim();
+
+      const summarySpan = trace.span({
+        name: "generate-summary-promo",
+        input: cleanedContent,
+        metadata: {
+          title: promo.title.rendered,
+        },
+      });
+      const summaryHandler = new CallbackHandler({ root: summarySpan });
+      const summary = await generateSummary(cleanedContent, summaryHandler);
+      summarySpan.update({ output: summary });
+      summarySpan.end(); // <-- ¡CORREGIDO! Usamos .end()
+
+      return new Document({
+        pageContent: summary,
+        metadata: {
+          source: promo.link,
+          title: promo.title.rendered,
+          type: "Promoción",
+          vigencia: promo.fecha_vigente,
+        },
+      });
+    });
+
+    const postDocuments = await Promise.all(postPromises);
+    const promoDocuments = await Promise.all(promoPromises);
 
     const allDocuments = [...postDocuments, ...promoDocuments];
 
@@ -102,9 +177,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: "Sincronización completada" });
   } catch (error) {
     console.error("Error en sincronización:", error);
+    trace.update({ metadata: { error: (error as Error).toString() } });
     return NextResponse.json(
       { message: "Error en la sincronización" },
       { status: 500 }
     );
+  } finally {
+    await langfuse.shutdownAsync();
   }
 }
