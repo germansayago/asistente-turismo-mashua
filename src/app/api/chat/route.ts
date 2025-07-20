@@ -10,10 +10,19 @@ import { promises as fs } from "fs";
 import path from "path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { Langfuse } from "langfuse";
+import { CallbackHandler } from "langfuse-langchain";
+
+// --- Instancia de Langfuse ---
+const langfuse = new Langfuse({
+  secretKey: process.env.LANGFUSE_SECRET_KEY,
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+  baseUrl: process.env.LANGFUSE_BASEURL,
+});
 
 const llm = new ChatOpenAI({ modelName: "gpt-4o", temperature: 0.7 });
 
-// --- 1. ACTUALIZAMOS LA HERRAMIENTA PARA INCLUIR LA PROCEDENCIA ---
+// --- Herramienta de Derivación ---
 const HandoffTool = z
   .object({
     nombre: z.string().describe("Nombre del cliente"),
@@ -21,7 +30,7 @@ const HandoffTool = z
     telefono: z.string().describe("Teléfono del cliente"),
     procedencia: z
       .string()
-      .describe("Ciudad o país desde donde escribe el cliente"), // <-- Nuevo campo
+      .describe("Ciudad o país desde donde escribe el cliente"),
     consulta: z.string().describe("Un resumen de la consulta del cliente"),
   })
   .describe(
@@ -39,7 +48,7 @@ const llmWithTools = llm.bindTools([
   },
 ]);
 
-// --- 2. ACTUALIZAMOS EL "CEREBRO" CON LA NUEVA PREGUNTA ---
+// --- "Cerebro" del Asistente (Prompt Principal) ---
 const masterPrompt = ChatPromptTemplate.fromMessages([
   [
     "system",
@@ -47,23 +56,11 @@ const masterPrompt = ChatPromptTemplate.fromMessages([
 
     **TU FLUJO DE CONVERSACIÓN EN 5 PASOS:**
 
-    1.  **SALUDO Y CALIFICACIÓN INICIAL:**
-        - Si es el primer mensaje, saluda cálidamente y haz una pregunta abierta (ej: "¿A dónde te gustaría viajar?").
-        - Continúa haciendo preguntas una por una para entender las necesidades del cliente: con quién viaja, **de dónde nos escribe**, y qué tipo de experiencia busca. Sé siempre breve.
-
-    2.  **APORTE DE VALOR (usando el CONTEXTO):**
-        - Una vez que tienes suficiente información, busca en tu contexto la información más relevante.
-        - Ofrece un resumen MUY CORTO y atractivo (1-2 frases).
-
-    3.  **TRANSICIÓN A LA VENTA:**
-        - Inmediatamente después de aportar valor, haz la transición a la venta.
-        - **Ejemplo:** "Basado en esto, puedo ayudarte a armar una cotización. ¿Te gustaría que te ponga en contacto con uno de nuestros asesores expertos?"
-
-    4.  **CAPTURA DE DATOS SECUENCIAL:**
-        - Si el usuario acepta, pide los datos de contacto UNO POR UNO: nombre, email y teléfono.
-
-    5.  **ACCIÓN FINAL (usar la herramienta 'derivar_a_vendedor'):**
-        - Una vez que tengas TODOS los datos (nombre, email, teléfono, y la procedencia que ya preguntaste), NO respondas más. Usa la herramienta 'derivar_a_vendedor' para enviar la información.
+    1.  **SALUDO Y CALIFICACIÓN INICIAL:** Inicia la conversación y haz preguntas una por una para entender las necesidades del cliente (con quién viaja, de dónde escribe, qué experiencia busca).
+    2.  **APORTE DE VALOR (usando el CONTEXTO):** Una vez que tienes suficiente información, ofrece un resumen MUY CORTO y atractivo (1-2 frases) basado en el contexto.
+    3.  **TRANSICIÓN A LA VENTA:** Inmediatamente después de aportar valor, ofrece contactar al usuario con un asesor experto para una cotización.
+    4.  **CAPTURA DE DATOS SECUENCIAL:** Si el usuario acepta, pide los datos de contacto UNO POR UNO: nombre, email y teléfono.
+    5.  **ACCIÓN FINAL (usar la herramienta 'derivar_a_vendedor'):** Una vez que tengas TODOS los datos de contacto y la procedencia, usa la herramienta 'derivar_a_vendedor' para enviar la información.
 
     Contexto de búsqueda:
     {context}`,
@@ -75,6 +72,13 @@ const masterPrompt = ChatPromptTemplate.fromMessages([
 const chain = masterPrompt.pipe(llmWithTools);
 
 export async function POST(req: Request) {
+  const trace = langfuse.trace({
+    name: "user-chat-request",
+    userId: "anonymous-user",
+  });
+
+  const langfuseHandler = new CallbackHandler({ root: trace });
+
   try {
     const { question, chat_history } = await req.json();
     const history = (chat_history || []).map(
@@ -101,12 +105,15 @@ export async function POST(req: Request) {
     const relevantDocs = await retriever.invoke(question);
     const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
 
-    // --- INVOCAMOS LA CADENA PRINCIPAL ---
-    const result = await chain.invoke({
-      chat_history: history,
-      input: question,
-      context: context,
-    });
+    // --- INVOCAMOS LA CADENA PRINCIPAL CON EL HANDLER DE LANGFUSE ---
+    const result = await chain.invoke(
+      {
+        chat_history: history,
+        input: question,
+        context: context,
+      },
+      { callbacks: [langfuseHandler] }
+    );
 
     let answer = "";
 
@@ -114,6 +121,8 @@ export async function POST(req: Request) {
     if (result.tool_calls && result.tool_calls.length > 0) {
       const toolCall = result.tool_calls[0];
       const contactInfo = toolCall.args;
+
+      trace.span({ name: "handoff-to-sales", input: contactInfo });
 
       const fullHistoryText = [...history, new HumanMessage(question)]
         .map((msg) => msg.content)
@@ -124,12 +133,11 @@ export async function POST(req: Request) {
         fetch(webhookUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // --- 3. AÑADIMOS EL NUEVO DATO AL WEBHOOK ---
           body: JSON.stringify({
             nombre: contactInfo.nombre,
             email: contactInfo.email,
             telefono: contactInfo.telefono,
-            procedencia: contactInfo.procedencia, // <-- Nuevo dato
+            procedencia: contactInfo.procedencia,
             consulta: contactInfo.consulta,
             historial_chat: fullHistoryText,
             fecha_lead: new Date().toISOString(),
@@ -145,9 +153,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ answer });
   } catch (error) {
     console.error("Error en el asistente:", error);
+    trace.update({ metadata: { error: (error as Error).toString() } });
     return NextResponse.json(
       { message: "Error en el asistente" },
       { status: 500 }
     );
+  } finally {
+    await langfuse.shutdownAsync();
   }
 }
