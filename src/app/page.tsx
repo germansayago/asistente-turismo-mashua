@@ -64,7 +64,7 @@ export default function Home() {
   };
 
   return (
-    <main className="h-[200vh] bg-gray-100 p-5">
+    <main className="h-[100vh] bg-gray-100 p-5">
       <h1 className="text-3xl font-bold">Página de Contenido</h1>
       <p>Aquí iría el contenido de tu web.</p>
 
