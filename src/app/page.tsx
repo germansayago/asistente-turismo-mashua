@@ -19,7 +19,7 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/chat", {
+      const response = await fetch("/api/assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -59,7 +59,7 @@ export default function Home() {
           height: "70vh",
           border: "1px solid #ccc",
           overflowY: "auto",
-          padding: "10px",
+          padding: "20px",
         }}
       >
         {messages.map((msg, index) => (
@@ -67,7 +67,7 @@ export default function Home() {
             key={index}
             style={{
               textAlign: msg.sender === "user" ? "right" : "left",
-              margin: "10px 0",
+              margin: "20px 0",
             }}
           >
             <span
@@ -91,7 +91,7 @@ export default function Home() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyPress={(e) => e.key === "Enter" && handleSend()}
+          onKeyUp={(e) => e.key === "Enter" && handleSend()}
           style={{ flexGrow: 1, padding: "10px" }}
           placeholder="Pregunta por nuestros paquetes..."
         />

@@ -1,19 +1,34 @@
 // /src/app/api/sync/route.ts
 import { NextResponse } from "next/server";
+// Ya no necesitamos importar 'headers' de 'next/headers'
 import { Document } from "@langchain/core/documents";
 import { OpenAIEmbeddings } from "@langchain/openai";
 import { promises as fs } from "fs";
 import path from "path";
 
+interface WordPressItem {
+  link: string;
+  title: { rendered: string };
+  content: { rendered: string };
+  fecha_vigente?: string;
+}
+
 const WORDPRESS_POSTS_URL =
   "https://mashua.com.ar/wp-json/wp/v2/posts?per_page=50&_fields=id,title,content,link";
-// Asegúrate de que el campo 'fecha_vigente' esté disponible en la respuesta de la API de promociones
 const WORDPRESS_PROMOS_URL =
-  "https://mashua.com.ar/wp-json/wp/v2/promocion?per_page=50&_fields=id,title,content,link,fecha_vigencia";
+  "https://mashua.com.ar/wp-json/wp/v2/promocion?per_page=50&_fields=id,title,content,link,fecha_vigente";
 
-export async function GET() {
+// 1. Usamos el parámetro 'request' que nos llega
+export async function GET(request: Request) {
+  // 2. Obtenemos los headers directamente desde el objeto 'request'
+  const authorization = request.headers.get("authorization");
+
+  if (authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+    return new NextResponse("Unauthorized", { status: 401 });
+  }
+
   try {
-    console.log("Iniciando sincronización de posts y promociones...");
+    console.log("Iniciando sincronización automática...");
 
     const [postsResponse, promosResponse] = await Promise.all([
       fetch(WORDPRESS_POSTS_URL),
@@ -24,11 +39,11 @@ export async function GET() {
       throw new Error("Error al obtener datos de WordPress");
     }
 
-    const posts = await postsResponse.json();
-    const promos = await promosResponse.json();
+    const posts: WordPressItem[] = await postsResponse.json();
+    const promos: WordPressItem[] = await promosResponse.json();
 
     const postDocuments = posts.map(
-      (post: any) =>
+      (post: WordPressItem) =>
         new Document({
           pageContent: post.content.rendered.replace(/<[^>]*>/g, "").trim(),
           metadata: {
@@ -40,15 +55,14 @@ export async function GET() {
     );
 
     const promoDocuments = promos.map(
-      (promo: any) =>
+      (promo: WordPressItem) =>
         new Document({
           pageContent: promo.content.rendered.replace(/<[^>]*>/g, "").trim(),
           metadata: {
             source: promo.link,
             title: promo.title.rendered,
             type: "Promoción",
-            // Guardamos la fecha de vigencia en los metadatos
-            vigencia: promo.fecha_vigencia,
+            vigencia: promo.fecha_vigente,
           },
         })
     );
