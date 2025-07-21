@@ -13,16 +13,18 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { Langfuse } from "langfuse";
 import { CallbackHandler } from "langfuse-langchain";
 
-// --- Instancia de Langfuse ---
+// Instancia del cliente de Langfuse para la observabilidad
 const langfuse = new Langfuse({
   secretKey: process.env.LANGFUSE_SECRET_KEY,
   publicKey: process.env.LANGFUSE_PUBLIC_KEY,
   baseUrl: process.env.LANGFUSE_BASEURL,
 });
 
+// Modelo de lenguaje para el agente
 const llm = new ChatOpenAI({ modelName: "gpt-4o", temperature: 0.7 });
 
-// --- Herramienta de Derivación ---
+// Definición de la herramienta para derivar leads.
+// El esquema Zod describe los datos que la herramienta espera.
 const HandoffTool = z
   .object({
     nombre: z.string().describe("Nombre del cliente"),
@@ -37,6 +39,7 @@ const HandoffTool = z
     "Usa esta herramienta cuando hayas recolectado toda la información de contacto del cliente."
   );
 
+// Vinculamos la herramienta al modelo LLM.
 const llmWithTools = llm.bindTools([
   {
     type: "function",
@@ -48,7 +51,7 @@ const llmWithTools = llm.bindTools([
   },
 ]);
 
-// --- PROMPT UNIFICADO Y ROBUSTO ---
+// Prompt principal del sistema. Define la personalidad, el flujo y las reglas del agente.
 const masterPrompt = ChatPromptTemplate.fromMessages([
   [
     "system",
@@ -79,17 +82,22 @@ const masterPrompt = ChatPromptTemplate.fromMessages([
   ["user", "{input}"],
 ]);
 
+// La cadena principal que orquesta el prompt y el modelo con las herramientas.
 const chain = masterPrompt.pipe(llmWithTools);
 
+// Endpoint de la API para las interacciones del chat.
 export async function POST(req: Request) {
   let trace = null;
 
   try {
+    // Extraemos los datos de la solicitud, incluyendo el ID de usuario.
     const { question, chat_history, userId } = await req.json();
 
+    // Validamos el ID de usuario o asignamos uno anónimo por defecto.
     const validatedUserId =
       userId && typeof userId === "string" ? userId : "anonymous-user";
 
+    // Iniciamos la traza de Langfuse para esta conversación.
     trace = langfuse.trace({
       name: "user-chat-request",
       userId: validatedUserId,
@@ -97,6 +105,7 @@ export async function POST(req: Request) {
 
     const langfuseHandler = new CallbackHandler({ root: trace });
 
+    // Convertimos el historial de chat al formato de LangChain.
     const history = (chat_history || []).map(
       (msg: { sender: string; text: string }) =>
         msg.sender === "user"
@@ -105,6 +114,7 @@ export async function POST(req: Request) {
     );
 
     // --- LÓGICA DE RAG (BÚSQUEDA) ---
+    // Leemos la base de datos de conocimiento local.
     const embeddings = new OpenAIEmbeddings();
     const dbFilePath = path.resolve(process.cwd(), "db.json");
     const savedData = JSON.parse(await fs.readFile(dbFilePath, "utf-8"));
@@ -117,11 +127,13 @@ export async function POST(req: Request) {
           new Document({ pageContent, metadata: savedData.documents[i] })
       )
     );
+    // Recuperamos los documentos más relevantes para la pregunta del usuario.
     const retriever = vectorStore.asRetriever({ k: 3 });
     const relevantDocs = await retriever.invoke(question);
     const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
 
     // --- INVOCAMOS LA CADENA PRINCIPAL ---
+    // Pasamos el historial, la pregunta y el contexto al LLM.
     const result = await chain.invoke(
       {
         chat_history: history,
@@ -134,6 +146,7 @@ export async function POST(req: Request) {
     let answer = "";
 
     // --- MANEJO DE LA RESPUESTA: TEXTO O ACCIÓN ---
+    // Verificamos si el resultado es una llamada a una herramienta.
     if (result.tool_calls && result.tool_calls.length > 0) {
       const toolCall = result.tool_calls[0];
       const contactInfo = toolCall.args;
@@ -143,6 +156,7 @@ export async function POST(req: Request) {
         .map((msg) => msg.content)
         .join("\n");
 
+      // Enviamos los datos del lead al webhook externo.
       const webhookUrl = process.env.MAKE_WEBHOOK_URL;
       if (webhookUrl) {
         fetch(webhookUrl, {
@@ -162,7 +176,9 @@ export async function POST(req: Request) {
 
       answer = `¡Muchas gracias, ${contactInfo.nombre}! He enviado tu consulta a nuestro equipo. Te contactarán a tu email (${contactInfo.email}) o por WhatsApp en breve.`;
     } else {
+      // Si no es una llamada a una herramienta, devolvemos la respuesta de texto.
       answer = result.content as string;
+      // Capa de seguridad: si la respuesta es vacía, usamos un fallback.
       if (!answer || answer.trim() === "") {
         console.warn("Respuesta nula o vacía del LLM. Usando fallback.");
         answer =
