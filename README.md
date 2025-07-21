@@ -98,7 +98,7 @@ Abre tu navegador en http://localhost:3000. El agente de chat estará disponible
 
 # 🤝 Contribuciones
 
-Siéntete libre de contribuir al proyecto. Puedes contactar al autor en...
+Siéntete libre de contribuir al proyecto.
 
 ```
 
