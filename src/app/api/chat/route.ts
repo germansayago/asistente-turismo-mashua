@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
+import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai"; // Importa el modelo de Openai
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai"; // Importa el modelo de Google
+
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import {
   ChatPromptTemplate,
@@ -20,8 +22,27 @@ const langfuse = new Langfuse({
   baseUrl: process.env.LANGFUSE_BASEURL,
 });
 
+const tags = ["gemini-1.5-flash"];
+
 // Modelo de lenguaje para el agente
-const llm = new ChatOpenAI({ modelName: "gpt-4o", temperature: 0.7 });
+// Openai | gpt-4o
+// const llm = new ChatOpenAI({
+//   modelName: "gpt-4o",
+//   temperature: 0.7,
+// });
+
+// Openai | gpt-3.5-turbo-0125
+// const llm = new ChatOpenAI({
+//   modelName: "gpt-3.5-turbo-0125",
+//   temperature: 0.7,
+// });
+
+// Gemini
+const llm = new ChatGoogleGenerativeAI({
+  model: "gemini-1.5-flash",
+  temperature: 0.7,
+  apiKey: process.env.GOOGLE_API_KEY,
+});
 
 // Definición de la herramienta para derivar leads.
 // El esquema Zod describe los datos que la herramienta espera.
@@ -103,7 +124,10 @@ export async function POST(req: Request) {
       userId: validatedUserId,
     });
 
-    const langfuseHandler = new CallbackHandler({ root: trace });
+    const langfuseHandler = new CallbackHandler({
+      root: trace,
+      tags: tags,
+    });
 
     // Convertimos el historial de chat al formato de LangChain.
     const history = (chat_history || []).map(
